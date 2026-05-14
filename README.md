@@ -1,376 +1,210 @@
-# AgentKit — WhatsApp AI Agent Builder
+# Christophe.AI — WhatsApp Intermediary Agent for Property Management
 
-Construye tu propio agente de WhatsApp con inteligencia artificial en menos de 30 minutos.
-No necesitas saber programar. Claude Code construye todo por ti.
-
-<!-- ![AgentKit Demo](demo.gif) -->
+Christophe is an AI agent that acts as a full intermediary between **tenants and landlords** over WhatsApp. No app to download, no account to create — just a WhatsApp message.
 
 ---
 
-## Que es AgentKit?
+## What Christophe does
 
-AgentKit es un proyecto que usa **Claude Code** (la herramienta de programacion de Anthropic)
-para generar un agente de WhatsApp completo y personalizado para tu negocio.
+A tenant messages about a broken boiler. Christophe collects the details, contacts the landlord for approval, proposes repair slots, and confirms the appointment to both parties. The humans only step in for key decisions.
 
-Tu solo respondes preguntas sobre tu negocio. Claude Code se encarga de:
-- Escribir todo el codigo
-- Configurar la conexion con WhatsApp
-- Crear un "cerebro" con IA que sabe sobre tu negocio
-- Dejarlo listo para que tus clientes le escriban
+```
+Tenant: "My oven stopped working"
+    → Christophe collects: what happened, checks done, availability
+    → Christophe notifies Marie (landlord) with a clean summary
+    → Marie replies "yes" on WhatsApp
+    → Christophe sends 3 repair slots to Thomas
+    → Thomas picks slot 2
+    → Both parties receive confirmation
+```
+
+Beyond repairs, Christophe answers any question about the lease: rent amount, due date, charge breakdown, deposit, past incidents — all from memory.
 
 ---
 
-## Como funciona? (El flujo completo)
-
-### Paso 1: Tu clonas el repo y corres un comando
-
-```bash
-git clone https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip
-cd whatsapp-agentkit
-bash start.sh
-```
-
-`start.sh` solo verifica que tengas Python 3.11+ y Claude Code instalados.
-
-### Paso 2: Abres Claude Code y escribes /build-agent
-
-```bash
-claude
-# Dentro de Claude Code escribe:
-/build-agent
-```
-
-Esto activa el sistema. Claude Code lee las instrucciones de `CLAUDE.md` y empieza
-a guiarte paso a paso.
-
-### Paso 3: Claude Code te entrevista (5 minutos)
-
-Te hace 10 preguntas, una por una:
-
-1. **Nombre de tu negocio** — ej: "Cafeteria El Buen Sabor"
-2. **A que se dedica** — ej: "Vendemos cafe de especialidad y postres artesanales"
-3. **Para que quieres el agente** — responder preguntas, agendar citas, tomar pedidos, etc.
-4. **Nombre del agente** — ej: "Sofia" (el nombre que veran tus clientes)
-5. **Tono de comunicacion** — profesional, amigable, vendedor, o empatico
-6. **Horario de atencion** — ej: "Lunes a Viernes 9am a 6pm"
-7. **Archivos de tu negocio** — menu, precios, FAQ (los pones en la carpeta /knowledge)
-8. **API Key de Anthropic** — la llave para usar Claude AI (te guia a obtenerla)
-9. **Proveedor de WhatsApp** — eliges entre Whapi.cloud, Meta, o Twilio
-10. **Credenciales del proveedor** — el token o keys de tu servicio de WhatsApp
-
-### Paso 4: Claude Code construye tu agente (2-5 minutos)
-
-Con tus respuestas, genera automaticamente estos archivos:
+## Architecture
 
 ```
-tu-proyecto/
-├── agent/                     ← EL AGENTE COMPLETO
-│   ├── main.py                Servidor web que recibe mensajes de WhatsApp
-│   ├── brain.py               Conexion con Claude AI (el cerebro)
-│   ├── memory.py              Guarda el historial de cada cliente
-│   ├── tools.py               Herramientas especificas de tu negocio
-│   └── providers/             Conexion con tu servicio de WhatsApp
-│       ├── base.py            Interfaz comun
-│       ├── __init__.py        Selecciona el proveedor automaticamente
-│       └── whapi.py           Adaptador (o meta.py, o twilio.py)
-│
-├── config/                    ← CONFIGURACION
-│   ├── business.yaml          Datos de tu negocio
-│   └── prompts.yaml           El "prompt" que define la personalidad del agente
-│
-├── knowledge/                 ← TUS ARCHIVOS
-│   └── (menu.pdf, precios.txt, etc.)
-│
+Tenant (WhatsApp)                    Landlord (WhatsApp)
+       |                                      |
+       └──────────────┬───────────────────────┘
+                      |
+                 Twilio Sandbox
+                      |
+                 ngrok tunnel
+                      |
+              FastAPI /webhook
+                      |
+         ┌────────────┴─────────────┐
+         │    Identity detection    │
+         │  (tenant vs landlord     │
+         │   by phone number)       │
+         └────────────┬─────────────┘
+                      |
+          ┌───────────┴───────────┐
+          |                       |
+    Tenant brain            Landlord brain
+    (Claude API             (Claude API
+     + tool use)             + tool use)
+          |                       |
+    contacter_bailleur()    approuver_intervention()
+                            refuser_intervention()
+                      |
+               SQLite (memory
+               + repair state)
+```
+
+### Message flow
+
+1. Tenant writes → webhook identifies them by phone number → tenant brain
+2. Claude collects info (one question at a time), then calls `contacter_bailleur(summary, availability)`
+3. Christophe proactively sends a WhatsApp to the landlord with the summary
+4. Landlord replies → webhook identifies them → landlord brain
+5. Claude interprets response, calls `approuver_intervention()` or `refuser_intervention()`
+6. Christophe notifies the tenant with the outcome (repair slots or rejection reason)
+
+### Repair states
+
+```
+WAITING_LANDLORD → CONFIRMED
+                → REJECTED
+```
+
+---
+
+## Stack
+
+| Component | Technology |
+|-----------|-----------|
+| AI | Claude claude-sonnet-4-6 (Anthropic) |
+| Server | FastAPI + Uvicorn |
+| WhatsApp | Twilio sandbox |
+| Memory | SQLite via SQLAlchemy async |
+| Tunnel (dev) | ngrok |
+| Config | python-dotenv + YAML |
+
+---
+
+## Project structure
+
+```
+├── agent/
+│   ├── main.py          FastAPI webhook + identity routing
+│   ├── brain.py         Two Claude contexts (tenant / landlord) with tool use
+│   ├── memory.py        Conversation history per phone number
+│   ├── repairs.py       Repair request state machine
+│   ├── tools.py         Business knowledge helpers
+│   ├── db.py            Shared SQLAlchemy engine
+│   └── providers/
+│       ├── base.py      Abstract WhatsApp provider
+│       ├── twilio.py    Twilio adapter
+│       └── __init__.py  Provider factory
+├── config/
+│   ├── prompts.yaml     System prompts (tenant + landlord)
+│   ├── business.yaml    Business info (property, parties, history)
+│   └── people.yaml      Phone number → identity mapping
+├── knowledge/           Lease docs, charge breakdowns, past incidents
 ├── tests/
-│   └── test_local.py          Simulador de chat en tu terminal
-│
-├── requirements.txt           Dependencias de Python
-├── Dockerfile                 Para produccion
-├── docker-compose.yml         Orquestacion
-└── .env                       Tus API keys (seguro, nunca se sube)
+│   └── test_local.py    Terminal chat simulator (no WhatsApp needed)
+├── .env                 API keys (never committed)
+└── requirements.txt
 ```
-
-### Paso 5: Pruebas tu agente en la terminal (5 minutos)
-
-Claude Code ejecuta un simulador de chat donde TU escribes como si fueras un cliente:
-
-```
-Tu: Hola, que horarios tienen?
-Agente: Hola! Nuestro horario es de Lunes a Viernes de 9am a 6pm.
-        Quieres que te ayude con algo mas?
-
-Tu: Cuanto cuesta el cafe americano?
-Agente: El cafe americano tiene un precio de $45 pesos.
-        Te gustaria ordenar uno?
-```
-
-Si algo no te gusta, le dices a Claude Code y lo ajusta al momento.
-
-### Paso 6: Deploy a produccion (opcional, 10 minutos)
-
-Cuando estes satisfecho con tu agente, Claude Code te guia para ponerlo en linea:
-
-1. **Claude Code prepara tu proyecto** para produccion (ajusta configuracion)
-2. **Tu lo subes a GitHub** — Claude Code te da los comandos exactos para crear tu repo
-3. **Conectas Railway** — entras a [railway.app](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip), le das tu repo de GitHub y Railway lo deployea automaticamente
-4. **Configuras las variables** — Claude Code te dice exactamente cuales poner en Railway (las mismas API keys de tu .env)
-5. **Configuras el webhook** — Claude Code te guia para conectar tu proveedor de WhatsApp con la URL de Railway
-
-Despues de esto, cualquier persona que te escriba por WhatsApp sera atendida por tu agente.
-
-**Nota:** No necesitas saber de servidores ni de deploy. Claude Code te dice cada paso, que escribir y donde hacer click.
 
 ---
 
-## Como funciona el agente ya en produccion?
+## Setup
 
-```
-Un cliente escribe "Hola" por WhatsApp
-         |
-         v
-Tu proveedor de WhatsApp (Whapi/Meta/Twilio) recibe el mensaje
-         |
-         v
-Envia el mensaje a tu servidor en Railway via webhook
-         |
-         v
-agent/providers/ → Normaliza el mensaje (cada proveedor tiene formato diferente)
-         |
-         v
-agent/memory.py → Busca el historial de ESE cliente (por numero de telefono)
-         |
-         v
-agent/brain.py → Envia a Claude AI:
-                 - El system prompt (personalidad + info de tu negocio)
-                 - El historial de la conversacion
-                 - El mensaje nuevo del cliente
-         |
-         v
-Claude AI genera una respuesta inteligente
-         |
-         v
-agent/providers/ → Envia la respuesta de vuelta por WhatsApp
-         |
-         v
-El cliente recibe la respuesta en segundos
-```
+### Requirements
 
-**Cosas importantes:**
-- Cada cliente tiene su propio historial. Si alguien habla contigo y vuelve al dia siguiente, el agente recuerda la conversacion anterior.
-- El agente NUNCA inventa informacion. Solo responde con lo que tu le diste.
-- Si no sabe algo, responde: "No tengo esa informacion, dejame conectarte con alguien del equipo."
+- Python 3.11+
+- Anthropic API key (`sk-ant-...`)
+- Twilio account (sandbox, free)
+- ngrok account (free)
 
----
-
-## Requisitos previos
-
-Necesitas 4 cosas antes de empezar:
-
-### 1. Python 3.11 o superior
-- **Mac**: `brew install python` o descarga de [python.org](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip)
-- **Windows**: Descarga de [python.org](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip) (marca "Add to PATH")
-- **Linux**: `sudo apt install python3.11`
-- Verifica: `python3 --version`
-
-### 2. Claude Code
-```bash
-# Primero necesitas Node.js: https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip
-npm install -g @anthropic-ai/claude-code
-
-# Autenticate (solo la primera vez)
-claude
-```
-
-### 3. API Key de Anthropic
-1. Ve a [platform.anthropic.com](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip)
-2. Crea una cuenta o inicia sesion
-3. Ve a Settings → API Keys → Create Key
-4. Copia la key (empieza con `sk-ant-...`)
-
-### 4. Cuenta de WhatsApp API (elige una)
-
-| Proveedor | Dificultad | Costo | Mejor para |
-|-----------|-----------|-------|------------|
-| [Whapi.cloud](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip) | Facil | Sandbox gratis | Empezar rapido, probar |
-| [Meta Cloud API](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip) | Media | Gratis por conversacion | Produccion seria |
-| [Twilio](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip) | Media | Pago por mensaje | Empresas, alta confiabilidad |
-
-**Si no estas seguro, empieza con Whapi.cloud.** Es la opcion mas rapida — te registras, copias un token, y listo.
-
----
-
-## Inicio rapido (3 comandos)
+### Install
 
 ```bash
-# 1. Clona el repositorio
-git clone https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip
-cd whatsapp-agentkit
-
-# 2. Verifica tu entorno
-bash start.sh
-
-# 3. Abre Claude Code y construye tu agente
-claude
-# Escribe: /build-agent
+git clone https://github.com/cggailla/christophe.ai.git
+cd christophe.ai
+uv venv --python 3.11
+uv pip install -r requirements.txt
 ```
 
-Claude Code te guia desde ahi. Solo responde las preguntas.
+### Configure
 
----
+Fill in `.env`:
 
-## Proveedores de WhatsApp
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+WHATSAPP_PROVIDER=twilio
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN=...
+TWILIO_PHONE_NUMBER=+14155238886
+PORT=8000
+ENVIRONMENT=development
+DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
+```
 
-AgentKit soporta 3 proveedores. Tu eliges cual usar durante el setup.
+Fill in `config/people.yaml` with the landlord's phone number (must have joined the Twilio sandbox):
 
-### Whapi.cloud (recomendado para empezar)
-- Registrate en [whapi.cloud](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip)
-- Tienen un sandbox gratuito (no necesitas verificar nada)
-- Solo necesitas: **1 token**
-- Ideal para probar y para negocios pequenos
+```yaml
+landlord:
+  name: "Marie Dubois"
+  phone: "+33..."
 
-### Meta Cloud API (oficial)
-- Configura en [developers.facebook.com](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip)
-- Es la API oficial de WhatsApp (de Meta/Facebook)
-- Necesitas: **Access Token** + **Phone Number ID** + **Verify Token**
-- Requiere cuenta de Facebook Business verificada
-- Gratis por conversacion (pagas solo por conversaciones iniciadas por ti)
+tenant:
+  name: "Thomas Martin"
+```
 
-### Twilio
-- Registrate en [twilio.com](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip)
-- Muy confiable, excelente documentacion
-- Necesitas: **Account SID** + **Auth Token** + **Phone Number**
-- Tiene sandbox para probar gratis
-- Pago por mensaje en produccion
-
----
-
-## Casos de uso
-
-| Tipo de negocio | Que hace el agente | Ejemplo |
-|-----------------|-------------------|---------|
-| **Restaurante** | Responde sobre menu, horarios, ubicacion | "El platillo del dia es..." |
-| **Clinica/Salon** | Agenda citas y reservaciones | "Tu cita quedo para el martes a las 3pm" |
-| **Inmobiliaria** | Califica leads y envia info de propiedades | "Tenemos 3 departamentos en tu rango..." |
-| **Tienda online** | Toma pedidos por WhatsApp | "Tu pedido de 2 pasteles quedo confirmado" |
-| **SaaS/Software** | Soporte tecnico post-venta | "Para resetear tu contrasena, sigue estos pasos..." |
-| **Cualquier negocio** | Responde preguntas frecuentes 24/7 | "Nuestro horario es..." |
-
----
-
-## Comandos utiles (despues del setup)
+### Run
 
 ```bash
-# Probar el agente sin WhatsApp (chat en terminal)
-python tests/test_local.py
+# Start the server
+.venv/bin/uvicorn agent.main:app --reload --port 8000
 
-# Arrancar el servidor localmente
-uvicorn agent.main:app --reload --port 8000
-
-# Build Docker para produccion
-docker compose up --build
-
-# Ver logs del agente
-docker compose logs -f agent
+# In another terminal, expose it
+./ngrok http 8000
 ```
 
----
+Set the ngrok URL + `/webhook` as the Twilio sandbox inbound URL in the Twilio console.
 
-## Personalizar tu agente despues
-
-No necesitas tocar codigo. Abre Claude Code y pidele cambios en lenguaje natural:
+### Test locally (no WhatsApp needed)
 
 ```bash
-# Cambiar como responde el agente
-claude "El agente esta siendo muy formal. Hazlo mas amigable y casual."
-
-# Agregar informacion nueva
-claude "Agregamos un nuevo servicio de delivery. Actualiza el agente."
-
-# Agregar una herramienta
-claude "Quiero que el agente pueda consultar disponibilidad de citas."
-
-# Cambiar de proveedor de WhatsApp
-claude "Quiero migrar de Whapi a Meta Cloud API."
+.venv/bin/python tests/test_local.py
 ```
 
 ---
 
-## Stack tecnico
+## Special commands
 
-Para los curiosos, esto es lo que se usa por debajo:
-
-| Componente | Tecnologia | Para que sirve |
-|-----------|-----------|----------------|
-| IA | Claude AI (claude-sonnet-4-6) | Genera las respuestas inteligentes |
-| Servidor | FastAPI + Uvicorn | Recibe los webhooks de WhatsApp |
-| WhatsApp | Whapi.cloud / Meta / Twilio | Conecta con WhatsApp (tu eliges) |
-| Base de datos | SQLite (local) / PostgreSQL (prod) | Guarda historial de conversaciones |
-| Deploy | Docker + Railway | Pone tu agente en internet |
-| Config | python-dotenv + YAML | Maneja API keys y configuracion |
+Send `clean` from any WhatsApp number to wipe conversation memory and reset all pending repairs. Useful for demos.
 
 ---
 
-## Arquitectura (para desarrolladores)
+## Key design decisions
 
-```
-WhatsApp (cliente)
-    |
-    v
-Proveedor (Whapi/Meta/Twilio) ←→ agent/providers/ (normaliza formato)
-    |
-    v
-FastAPI (agent/main.py) ←→ agent/memory.py (historial SQLite)
-    |
-    v
-Claude API (agent/brain.py) ←→ config/prompts.yaml (personalidad)
-    |
-    v
-Respuesta enviada de vuelta por WhatsApp
-```
+**Why autonomous agent + tool use instead of a state machine?**
+Claude decides what to do based on context — it reads the conversation, the repair state, and the parties involved, then calls the right tool. This makes it adaptable: the same agent handles a broken boiler, a rent receipt request, or a payment delay without branching code.
 
-El sistema usa un **patron adaptador** para proveedores de WhatsApp. Cada proveedor
-(Whapi, Meta, Twilio) implementa la misma interfaz, asi que `main.py` no sabe ni le
-importa cual estas usando. Solo llama `proveedor.parsear_webhook()` y
-`proveedor.enviar_mensaje()`.
+**Why two separate brain contexts?**
+The tenant and landlord have different roles, expectations, and available actions. Tenant brain has `contacter_bailleur()`. Landlord brain has `approuver_intervention()` and `refuser_intervention()`. Each system prompt is tuned to the party's perspective.
+
+**Why identity by phone number?**
+The same Twilio number receives messages from everyone. Routing by phone number (mapped in `people.yaml`) keeps the webhook simple and the logic clean.
 
 ---
 
-## Preguntas frecuentes
+## What's next
 
-**Necesito saber programar?**
-No. Claude Code escribe todo el codigo por ti. Tu solo respondes preguntas.
-
-**Cuanto cuesta?**
-- AgentKit es gratis y open source
-- Claude API: pagas por uso (~$3/millon de tokens, muy barato para un bot)
-- WhatsApp: depende del proveedor (Whapi tiene sandbox gratis)
-- Railway: plan gratis disponible para proyectos pequenos
-
-**Puedo usar esto con mi negocio real?**
-Si. Despues de las pruebas locales, lo subes a Railway y cualquier cliente
-que te escriba por WhatsApp sera atendido por tu agente.
-
-**Y si el agente no sabe algo?**
-Responde algo como: "No tengo esa informacion, dejame conectarte con alguien
-de nuestro equipo." Nunca inventa datos.
-
-**Puedo tener multiples agentes?**
-Si. Clona el repo varias veces, uno por negocio. Cada agente es independiente.
-
-**Puedo cambiar de proveedor de WhatsApp despues?**
-Si. Abre Claude Code y dile: "Quiero cambiar de Whapi a Meta Cloud API."
-El regenerara los archivos necesarios.
+- Multi-tenant support (multiple properties, multiple landlords)
+- Slot selection flow (tenant picks from proposed repair slots)
+- Real repair company integrations (vs. simulated slots)
+- Lease document generation (rent receipts, amendments)
+- Charge regularization assistant
 
 ---
 
-## Creditos
+## License
 
-Creado por **Todo de IA** — [@soyenriquerocha](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip)
-
-Construido con [Claude Code](https://raw.githubusercontent.com/onehundredfortyfive-southernbaptist487/whatsapp-agentkit/main/.claude/commands/whatsapp_agentkit_3.5.zip) para builders de LATAM.
-
----
-
-## Licencia
-
-MIT — Usa este proyecto como quieras, para lo que quieras.
+MIT
