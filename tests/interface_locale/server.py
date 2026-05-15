@@ -251,11 +251,19 @@ async def clean():
 
 @app.get("/documents/{filename}")
 async def servir_document(filename: str):
-    filepath = os.path.join("documents", filename)
-    if not os.path.isfile(filepath):
-        from fastapi import HTTPException
+    from fastapi import HTTPException
+    from pathlib import Path
+
+    # Refuser tout caractère de chemin pour bloquer le path traversal
+    if "/" in filename or "\\" in filename or ".." in filename or not filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Nom de fichier invalide")
+
+    base = Path("documents").resolve()
+    resolved = (base / filename).resolve()
+    if not str(resolved).startswith(str(base) + os.sep) or not resolved.is_file():
         raise HTTPException(status_code=404, detail="Document introuvable")
-    return FileResponse(filepath, media_type="application/pdf", filename=filename)
+
+    return FileResponse(str(resolved), media_type="application/pdf", filename=filename)
 
 
 @app.get("/")
@@ -752,13 +760,9 @@ HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Dossier actif -->
+    <!-- Dossiers actifs (peuvent coexister) -->
     <div class="dossier-panel" id="dossier-panel">
-      <div class="dossier-title">
-        <div class="dossier-title-dot"></div>
-        <span id="dossier-titre">Dossier en cours</span>
-      </div>
-      <div class="milestones-list" id="milestones-list"></div>
+      <div id="dossiers-container"></div>
     </div>
 
     <!-- Activité temps réel -->
@@ -900,31 +904,50 @@ function addJournalEntry(time, desc) {
 const MILESTONE_ICONS = {
   FAIT: '✅', EN_COURS: '🔄', EN_ATTENTE: '⏳', IGNORE: '⏭️'
 };
-function updateDossier(dossier) {
-  const panel = document.getElementById('dossier-panel');
-  const titre = document.getElementById('dossier-titre');
-  const list  = document.getElementById('milestones-list');
+// État local : tous les dossiers actifs vus par l'UI
+const activeDossiers = new Map();
 
-  if (!dossier || dossier.statut === 'TERMINE' || dossier.statut === 'ANNULE') {
+function renderDossiers() {
+  const panel = document.getElementById('dossier-panel');
+  const container = document.getElementById('dossiers-container');
+  container.innerHTML = '';
+
+  const visibles = [...activeDossiers.values()].filter(d => d.statut === 'ACTIF');
+  if (visibles.length === 0) {
     panel.classList.remove('visible');
     return;
   }
-
   panel.classList.add('visible');
-  titre.textContent = dossier.titre;
-  list.innerHTML = '';
 
-  (dossier.milestones || []).forEach(m => {
-    const cls = m.statut === 'FAIT' ? 'done' : m.statut === 'EN_COURS' ? 'active' : '';
-    const icon = MILESTONE_ICONS[m.statut] || '⏳';
-    const row = document.createElement('div');
-    row.className = `milestone-row ${cls}`;
-    row.innerHTML = `
-      <span class="milestone-icon">${icon}</span>
-      <span class="milestone-label">${escHtml(m.label)}</span>
-      <span class="milestone-id">${m.id}</span>`;
-    list.appendChild(row);
+  visibles.forEach(d => {
+    const block = document.createElement('div');
+    block.style.cssText = 'margin-bottom: 10px;';
+    const milestonesHtml = (d.milestones || []).map(m => {
+      const cls = m.statut === 'FAIT' ? 'done' : m.statut === 'EN_COURS' ? 'active' : '';
+      const icon = MILESTONE_ICONS[m.statut] || '⏳';
+      return `<div class="milestone-row ${cls}">
+        <span class="milestone-icon">${icon}</span>
+        <span class="milestone-label">${escHtml(m.label)}</span>
+        <span class="milestone-id">${m.id}</span></div>`;
+    }).join('');
+    block.innerHTML = `
+      <div class="dossier-title">
+        <div class="dossier-title-dot"></div>
+        <span>#${d.id} · ${escHtml(d.titre)}</span>
+      </div>
+      <div class="milestones-list">${milestonesHtml}</div>`;
+    container.appendChild(block);
   });
+}
+
+function updateDossier(dossier) {
+  if (!dossier) return;
+  if (dossier.statut === 'TERMINE' || dossier.statut === 'ANNULE') {
+    activeDossiers.delete(dossier.id);
+  } else {
+    activeDossiers.set(dossier.id, dossier);
+  }
+  renderDossiers();
 }
 
 function addDocBubble(side, filename, url, legende) {
@@ -1054,8 +1077,8 @@ ws.onmessage = (e) => {
     document.querySelectorAll('.pipeline-step').forEach(el => el.className = 'pipeline-step');
     pipelineStep = 0;
     // Reset dossier panel
-    document.getElementById('dossier-panel').classList.remove('visible');
-    document.getElementById('milestones-list').innerHTML = '';
+    activeDossiers.clear();
+    renderDossiers();
     // Reset journal
     document.getElementById('journal-list').innerHTML = '<div class="journal-empty">Aucune action encore enregistrée</div>';
     document.getElementById('journal-count').textContent = '0';

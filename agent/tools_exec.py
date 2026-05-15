@@ -117,8 +117,8 @@ TOOLS = [
         "name": "generer_et_envoyer_document",
         "description": (
             "Génère un document PDF officiel et l'envoie aux parties concernées. "
-            "Utilise pour : quittance de loyer, récapitulatif de réparation, tout document à transmettre. "
-            "Tu dois remplir toutes les données depuis ta connaissance du bien et du bail."
+            "Les données légales (noms, adresse, montants) viennent automatiquement du bail — "
+            "tu ne fournis que la période concernée."
         ),
         "input_schema": {
             "type": "object",
@@ -131,11 +131,18 @@ TOOLS = [
                 "donnees": {
                     "type": "object",
                     "description": (
-                        "Données pour remplir le document. Pour quittance_loyer : "
-                        "tenant_name, landlord_name, property_address, periode (ex: 'juillet 2025'), "
-                        "date_debut (ex: '01/07/2025'), date_fin (ex: '31/07/2025'), "
-                        "loyer_hc (nombre), charges (nombre), total (nombre), date_emission."
+                        "Données contextuelles. Champs autorisés : "
+                        "periode (ex: 'juillet 2025'), date_debut (ex: '01/07/2025'), "
+                        "date_fin (ex: '31/07/2025'), date_emission (optionnel). "
+                        "Les autres champs sont chargés depuis le bail et ne peuvent pas être surchargés."
                     ),
+                    "properties": {
+                        "periode": {"type": "string"},
+                        "date_debut": {"type": "string"},
+                        "date_fin": {"type": "string"},
+                        "date_emission": {"type": "string"},
+                    },
+                    "required": ["periode"],
                 },
                 "destinataires": {
                     "type": "array",
@@ -153,12 +160,10 @@ TOOLS = [
     {
         "name": "creer_dossier",
         "description": (
-            "Crée un dossier de suivi avec des milestones pour un workflow multi-étapes. "
-            "Utilise dès qu'une demande implique plusieurs échanges entre parties (remplacement meuble, "
-            "réparation, demande de travaux, etc.). "
-            "Le dossier permet de toujours savoir où en est le processus. "
-            "Exemples de milestones : ['Marie contactée pour le canapé', 'Marie choisit le modèle', "
-            "'Thomas donne ses disponibilités', 'Livraison confirmée']."
+            "Ouvre un nouveau dossier de suivi pour une demande. Plusieurs dossiers peuvent être "
+            "ACTIFS en parallèle — créer un nouveau dossier n'efface PAS les autres. "
+            "Tu construis le plan toi-même : la liste complète et logique des étapes nécessaires "
+            "pour traiter la demande de bout en bout, de la réception à la résolution finale."
         ),
         "input_schema": {
             "type": "object",
@@ -176,19 +181,20 @@ TOOLS = [
     {
         "name": "mettre_a_jour_milestone",
         "description": (
-            "Met à jour le statut d'une étape dans le dossier actif. "
-            "Appelle après chaque action complétée pour garder le dossier à jour. "
-            "Statuts possibles : FAIT (étape complétée), EN_COURS (en train de faire), "
-            "IGNORE (non applicable)."
+            "Met à jour le statut d'une étape. Si plusieurs dossiers sont actifs, "
+            "précise le dossier_id pour cibler le bon (visible dans le bloc 'Dossiers actifs')."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "milestone_id": {"type": "string", "description": "ID du milestone (ex: 'm1', 'm2', 'm3')"},
+                "milestone_id": {"type": "string", "description": "ID local du milestone dans le dossier (ex: 'm1')"},
                 "statut": {
                     "type": "string",
                     "enum": ["FAIT", "EN_COURS", "IGNORE"],
-                    "description": "Nouveau statut",
+                },
+                "dossier_id": {
+                    "type": "integer",
+                    "description": "ID du dossier ciblé. Optionnel ; défaut = dossier actif le plus récent.",
                 },
             },
             "required": ["milestone_id", "statut"],
@@ -225,6 +231,10 @@ TOOLS = [
                 "titre": {
                     "type": "string",
                     "description": "Nouveau titre du dossier si sa portée a évolué (optionnel)",
+                },
+                "dossier_id": {
+                    "type": "integer",
+                    "description": "ID du dossier à réviser. Optionnel ; défaut = dossier actif le plus récent.",
                 },
             },
             "required": ["milestones"],
@@ -291,6 +301,10 @@ async def _auto_log(nom: str, inputs: dict, result: str, ctx: dict):
     landlord_name = ctx.get("landlord_name", "le bailleur")
 
     if nom == "contacter_partie":
+        # Ne logger l'envoi que si le résultat indique un succès — évite que
+        # Claude lise "message envoyé" et ne retente pas en cas d'échec Twilio.
+        if "succès" not in result.lower():
+            return
         dest = inputs.get("destinataire", "")
         dest_name = landlord_name if dest == "bailleur" else tenant_name
         msg_preview = inputs.get("message", "")[:80].replace("\n", " ")
@@ -361,17 +375,21 @@ async def _dispatcher(nom: str, inputs: dict, ctx: dict) -> str:
         return f"Dossier #{dossier_id} créé : '{inputs['titre']}'\nMilestones :\n{milestones_str}"
 
     elif nom == "mettre_a_jour_milestone":
-        return await mettre_a_jour_milestone(inputs["milestone_id"], inputs["statut"])
+        return await mettre_a_jour_milestone(
+            inputs["milestone_id"], inputs["statut"], inputs.get("dossier_id")
+        )
 
     elif nom == "reviser_dossier":
-        return await reviser_dossier(inputs["milestones"], inputs.get("titre"))
+        return await reviser_dossier(
+            inputs["milestones"], inputs.get("dossier_id"), inputs.get("titre")
+        )
 
     elif nom == "lire_dossier_actif":
-        from agent.dossiers import formater_dossier
-        dossier = await lire_dossier_actif()
-        if not dossier:
+        from agent.dossiers import lire_dossiers_actifs, formater_dossiers_actifs
+        actifs = await lire_dossiers_actifs()
+        if not actifs:
             return "Aucun dossier actif en ce moment."
-        return formater_dossier(dossier)
+        return formater_dossiers_actifs(actifs)
 
     elif nom == "escalader":
         logger.warning(f"ESCALADE [{inputs['urgence']}] : {inputs['raison']}")
@@ -451,14 +469,12 @@ async def _confirmer_rdv(inputs: dict, ctx: dict) -> str:
     # Enregistrer en DB
     tenant_phone = ctx.get("tenant_phone", "")
     if tenant_phone:
-        await creer_reparation(
+        repair_id = await creer_reparation(
             tenant_phone,
             f"{type_int} — {prestataire} — {details}",
             creneau,
         )
-        await mettre_a_jour_statut(
-            (await _get_last_repair_id(tenant_phone)), "CONFIRMED"
-        )
+        await mettre_a_jour_statut(repair_id, "CONFIRMED")
 
     return (
         f"RDV confirmé : {prestataire} intervient le {creneau} "
@@ -508,6 +524,7 @@ async def _generer_et_envoyer_document(inputs: dict, ctx: dict) -> str:
 
 
 async def _get_last_repair_id(tenant_phone: str) -> str:
+    # Conservé pour compat, mais _confirmer_rdv utilise désormais l'id retourné par creer_reparation.
     from agent.repairs import obtenir_reparation_en_attente
     r = await obtenir_reparation_en_attente("WAITING_LANDLORD")
     return r.id if r else ""

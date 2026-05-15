@@ -19,6 +19,9 @@ knowledge/*
 # Documents générés par l'agent (PDFs de test)
 documents/
 
+# PII — numéros de téléphone des parties
+config/people.yaml
+
 # Config de session
 config/session.yaml
 

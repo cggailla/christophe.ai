@@ -1,6 +1,8 @@
 # agent/providers/twilio.py — Adaptateur Twilio WhatsApp
 
 import os
+import hmac
+import hashlib
 import logging
 import base64
 import httpx
@@ -18,8 +20,31 @@ class FournisseurTwilio(FournisseurWhatsApp):
         self.auth_token = os.getenv("TWILIO_AUTH_TOKEN")
         self.numero = os.getenv("TWILIO_PHONE_NUMBER")
 
+    def _signature_valide(self, url: str, params: dict, signature: str) -> bool:
+        """
+        Valide la signature Twilio (HMAC-SHA1 sur URL + params triés, puis base64).
+        Doc : https://www.twilio.com/docs/usage/webhooks/webhooks-security
+        """
+        if not self.auth_token or not signature:
+            return False
+        data = url + "".join(f"{k}{params[k]}" for k in sorted(params.keys()))
+        mac = hmac.new(self.auth_token.encode("utf-8"), data.encode("utf-8"), hashlib.sha1).digest()
+        attendu = base64.b64encode(mac).decode("utf-8")
+        return hmac.compare_digest(attendu, signature)
+
     async def parser_webhook(self, request: Request) -> list[MessageEntrant]:
         form = await request.form()
+
+        # Validation de la signature Twilio : refuse tout webhook non signé.
+        # En dev (TWILIO_AUTH_TOKEN vide) on bypasse pour ne pas bloquer les tests.
+        if self.auth_token:
+            signature = request.headers.get("X-Twilio-Signature", "")
+            url = str(request.url)
+            params = {k: form.get(k, "") for k in form.keys()}
+            if not self._signature_valide(url, params, signature):
+                logger.warning(f"Signature Twilio invalide pour {url} — rejet")
+                return []
+
         texte = form.get("Body", "").strip()
         expediteur = form.get("From", "")
         destinataire = form.get("To", "")

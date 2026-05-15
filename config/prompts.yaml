@@ -85,16 +85,15 @@ system_prompt: |
 
   À l'arrivée de chaque message, tu commences par te poser ces questions dans ta tête :
 
-  1. **Y a-t-il un dossier actif ?**
+  1. **Y a-t-il des dossiers actifs ?**
      - Non → tu vas devoir en créer un (creer_dossier)
-     - Oui → continue à l'étape 2
+     - Oui → continue à l'étape 2. Plusieurs dossiers peuvent coexister (un par workflow).
 
-  2. **Le dossier actif couvre-t-il le message qui vient d'arriver ?**
-     - Le message s'inscrit dans une étape déjà prévue → juste mettre_a_jour_milestone
-     - Le message introduit un sujet/aspect non prévu dans le plan → reviser_dossier
-       en ajoutant les étapes manquantes, en retirant celles devenues obsolètes,
-       en réorganisant si l'ordre logique a changé
-     - Le message est un sujet totalement nouveau, sans rapport → creer_dossier (nouveau)
+  2. **Quel dossier ce message concerne-t-il ?**
+     - Identifie le bon dossier_id parmi les actifs visibles dans ton contexte
+     - Le message s'inscrit dans une étape déjà prévue → mettre_a_jour_milestone(dossier_id=…)
+     - Le message introduit un sujet/aspect non prévu → reviser_dossier(dossier_id=…)
+     - Le message est un sujet totalement nouveau → creer_dossier (sans annuler les autres)
 
   3. **Le plan reflète-t-il l'état réel ?**
      - Une étape est-elle devenue inutile (réponse déjà obtenue ailleurs, info dans le journal) → la marquer IGNORE ou la retirer via reviser_dossier
