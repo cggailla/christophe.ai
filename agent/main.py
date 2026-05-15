@@ -11,7 +11,11 @@ from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 
 from agent.brain import agent_loop
-from agent.memory import initialiser_db, sauvegarder_message, obtenir_historique
+from agent.memory import initialiser_db, sauvegarder_message, obtenir_historique, effacer_historique
+from agent.journal import effacer_journal
+from agent.dossiers import effacer_tous_dossiers
+from agent.notes import effacer_toutes_notes
+from agent.repairs import effacer_toutes_reparations
 from agent.providers import obtenir_fournisseur
 
 load_dotenv(override=True)
@@ -112,6 +116,18 @@ async def webhook_handler(request: Request):
             # piloter l'agent depuis un numéro arbitraire.
             if msg.telephone not in (TENANT_PHONE, LANDLORD_PHONE):
                 logger.warning(f"Message reçu d'un numéro inconnu {msg.telephone} — ignoré")
+                continue
+
+            # Commande de reset — réservée aux numéros connus uniquement
+            if msg.texte.strip().lower() == "clean":
+                await effacer_journal()
+                await effacer_tous_dossiers()
+                await effacer_toutes_notes()
+                await effacer_toutes_reparations()
+                for phone in (TENANT_PHONE, LANDLORD_PHONE):
+                    await effacer_historique(phone)
+                await fournisseur.envoyer_message(msg.telephone, "✅ Mémoire effacée. Nouvelle conversation.")
+                logger.info(f"Reset complet déclenché par {msg.telephone}")
                 continue
 
             est_bailleur = msg.telephone == LANDLORD_PHONE

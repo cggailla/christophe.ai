@@ -39,7 +39,15 @@ class FournisseurTwilio(FournisseurWhatsApp):
         # En dev (TWILIO_AUTH_TOKEN vide) on bypasse pour ne pas bloquer les tests.
         if self.auth_token:
             signature = request.headers.get("X-Twilio-Signature", "")
-            url = str(request.url)
+            # Twilio signe avec l'URL publique (ngrok). FastAPI voit localhost → mismatch.
+            # On reconstruit l'URL réelle depuis PUBLIC_URL ou les headers de forwarding.
+            public_url = os.getenv("PUBLIC_URL", "").rstrip("/")
+            if public_url:
+                url = f"{public_url}{request.url.path}"
+            else:
+                proto = request.headers.get("x-forwarded-proto", "http")
+                host = request.headers.get("x-forwarded-host", str(request.url.netloc))
+                url = f"{proto}://{host}{request.url.path}"
             params = {k: form.get(k, "") for k in form.keys()}
             if not self._signature_valide(url, params, signature):
                 logger.warning(f"Signature Twilio invalide pour {url} — rejet")

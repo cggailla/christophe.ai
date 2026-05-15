@@ -15,10 +15,10 @@ Tenant: "My oven stopped working"
     → Marie replies "yes" on WhatsApp
     → Christophe sends 3 repair slots to Thomas
     → Thomas picks slot 2
-    → Both parties receive confirmation
+    → Both parties receive confirmation + PDF document if needed
 ```
 
-Beyond repairs, Christophe answers any question about the lease: rent amount, due date, charge breakdown, deposit, past incidents — all from memory.
+Beyond repairs, Christophe handles rent receipts, lease questions, payment delays, and any coordination between the two parties — all autonomously.
 
 ---
 
@@ -30,6 +30,7 @@ Tenant (WhatsApp)                    Landlord (WhatsApp)
        └──────────────┬───────────────────────┘
                       |
                  Twilio Sandbox
+                 (HMAC-SHA1 signature validation)
                       |
                  ngrok tunnel
                       |
@@ -41,34 +42,47 @@ Tenant (WhatsApp)                    Landlord (WhatsApp)
          │   by phone number)       │
          └────────────┬─────────────┘
                       |
-          ┌───────────┴───────────┐
-          |                       |
-    Tenant brain            Landlord brain
-    (Claude API             (Claude API
-     + tool use)             + tool use)
-          |                       |
-    contacter_bailleur()    approuver_intervention()
-                            refuser_intervention()
+              agent/brain.py
+              Agentic loop (max 10 iterations)
+              Claude Sonnet 4.6 + 12 tools
                       |
-               SQLite (memory
-               + repair state)
+         ┌────────────┴──────────────┐
+         │  Context injected on      │
+         │  every turn:              │
+         │  - Journal (done actions) │
+         │  - Active dossiers (plan) │
+         │  - Conversation history   │
+         └────────────┬──────────────┘
+                      |
+              SQLite (async)
+              messages, notes, dossiers,
+              journal, reparations
 ```
 
-### Message flow
+### The plan protocol
 
-1. Tenant writes → webhook identifies them by phone number → tenant brain
-2. Claude collects info (one question at a time), then calls `contacter_bailleur(summary, availability)`
-3. Christophe proactively sends a WhatsApp to the landlord with the summary
-4. Landlord replies → webhook identifies them → landlord brain
-5. Claude interprets response, calls `approuver_intervention()` or `refuser_intervention()`
-6. Christophe notifies the tenant with the outcome (repair slots or rejection reason)
+Every request is tracked as a **dossier** with milestones. At each turn, Christophe reviews the active plan, marks completed steps, and revises the plan if reality has changed. Multiple dossiers can be active simultaneously (e.g. a repair workflow and a rent receipt running in parallel).
 
-### Repair states
+The **journal** is written by the system (not by Claude) and injected into every prompt — it's the single source of truth for what has already been done.
 
-```
-WAITING_LANDLORD → CONFIRMED
-                → REJECTED
-```
+---
+
+## Tools (12)
+
+| Tool | Description |
+|------|-------------|
+| `contacter_partie` | Send a WhatsApp message to the other party |
+| `recherche_web` | Web search via Tavily |
+| `sauvegarder_note` | Persist a key fact for future conversations |
+| `lire_notes` | Read saved notes |
+| `creer_reparation` | Open a repair request |
+| `obtenir_reparations` | List active repair requests |
+| `confirmer_rdv` | Confirm a repair appointment |
+| `generer_et_envoyer_document` | Generate and send a PDF (rent receipt, etc.) |
+| `creer_dossier` | Open a new workflow plan with milestones |
+| `mettre_a_jour_milestone` | Mark a plan step as done / in progress |
+| `reviser_dossier` | Restructure the active plan |
+| `lire_dossier_actif` | Read all active dossiers |
 
 ---
 
@@ -76,10 +90,12 @@ WAITING_LANDLORD → CONFIRMED
 
 | Component | Technology |
 |-----------|-----------|
-| AI | Claude claude-sonnet-4-6 (Anthropic) |
+| AI | Claude Sonnet 4.6 (Anthropic) |
 | Server | FastAPI + Uvicorn |
 | WhatsApp | Twilio sandbox |
-| Memory | SQLite via SQLAlchemy async |
+| Memory | SQLite via SQLAlchemy async (aiosqlite) |
+| PDF generation | fpdf2 |
+| Web search | Tavily |
 | Tunnel (dev) | ngrok |
 | Config | python-dotenv + YAML |
 
@@ -89,24 +105,30 @@ WAITING_LANDLORD → CONFIRMED
 
 ```
 ├── agent/
-│   ├── main.py          FastAPI webhook + identity routing
-│   ├── brain.py         Two Claude contexts (tenant / landlord) with tool use
-│   ├── memory.py        Conversation history per phone number
-│   ├── repairs.py       Repair request state machine
-│   ├── tools.py         Business knowledge helpers
-│   ├── db.py            Shared SQLAlchemy engine
+│   ├── main.py           FastAPI webhook + identity routing + clean command
+│   ├── brain.py          Agentic loop — Claude + tools, journal + dossier injection
+│   ├── tools_exec.py     12 tools with JSON schemas + auto-journal hook
+│   ├── dossiers.py       Multi-workflow plan tracking (milestones)
+│   ├── journal.py        Auto-written action log (source of truth)
+│   ├── memory.py         Conversation history per phone number
+│   ├── notes.py          Persistent key-value memory
+│   ├── repairs.py        Repair request lifecycle
+│   ├── documents.py      PDF generation (rent receipts) — legal fields from bail.yaml only
+│   ├── db.py             Shared SQLAlchemy async engine
 │   └── providers/
-│       ├── base.py      Abstract WhatsApp provider
-│       ├── twilio.py    Twilio adapter
-│       └── __init__.py  Provider factory
+│       ├── base.py       Abstract WhatsApp provider
+│       ├── twilio.py     Twilio adapter + HMAC-SHA1 signature validation
+│       └── __init__.py   Provider factory
 ├── config/
-│   ├── prompts.yaml     System prompts (tenant + landlord)
-│   ├── business.yaml    Business info (property, parties, history)
-│   └── people.yaml      Phone number → identity mapping
-├── knowledge/           Lease docs, charge breakdowns, past incidents
+│   ├── prompts.yaml      System prompt — identity, responsibility matrix, plan protocol
+│   ├── bail.yaml         Authoritative lease data (rent, parties, address)
+│   ├── business.yaml     Additional business context
+│   └── people.yaml       Phone number → identity mapping (gitignored — see people.example.yaml)
+├── documents/            Generated PDFs served via PUBLIC_URL
 ├── tests/
-│   └── test_local.py    Terminal chat simulator (no WhatsApp needed)
-├── .env                 API keys (never committed)
+│   └── interface_locale/
+│       └── server.py     Local 3-column web UI (port 7777) — no Twilio needed
+├── .env                  API keys (never committed)
 └── requirements.txt
 ```
 
@@ -119,6 +141,7 @@ WAITING_LANDLORD → CONFIRMED
 - Python 3.11+
 - Anthropic API key (`sk-ant-...`)
 - Twilio account (sandbox, free)
+- Tavily API key (free tier available)
 - ngrok account (free)
 
 ### Install
@@ -126,13 +149,14 @@ WAITING_LANDLORD → CONFIRMED
 ```bash
 git clone https://github.com/cggailla/christophe.ai.git
 cd christophe.ai
-uv venv --python 3.11
-uv pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ### Configure
 
-Fill in `.env`:
+Copy and fill in `.env`:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
@@ -140,12 +164,14 @@ WHATSAPP_PROVIDER=twilio
 TWILIO_ACCOUNT_SID=AC...
 TWILIO_AUTH_TOKEN=...
 TWILIO_PHONE_NUMBER=+14155238886
+TAVILY_API_KEY=tvly-...
+PUBLIC_URL=https://<your-ngrok>.ngrok-free.app   # required for PDF attachments
 PORT=8000
 ENVIRONMENT=development
 DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 ```
 
-Fill in `config/people.yaml` with the landlord's phone number (must have joined the Twilio sandbox):
+Copy and fill in `config/people.yaml` (see `config/people.example.yaml`):
 
 ```yaml
 landlord:
@@ -154,54 +180,62 @@ landlord:
 
 tenant:
   name: "Thomas Martin"
+  phone: "+33..."
 ```
+
+Both numbers must have joined the Twilio WhatsApp sandbox (`join <sandbox-word>` sent to the Twilio number).
 
 ### Run
 
 ```bash
-# Start the server
-.venv/bin/uvicorn agent.main:app --reload --port 8000
+# Start the API server
+source .venv/bin/activate
+uvicorn agent.main:app --port 8000
 
-# In another terminal, expose it
+# Expose it publicly
 ./ngrok http 8000
 ```
 
-Set the ngrok URL + `/webhook` as the Twilio sandbox inbound URL in the Twilio console.
+Set the ngrok HTTPS URL + `/webhook` as the **"When a message comes in"** URL in the Twilio sandbox settings.
 
-### Test locally (no WhatsApp needed)
+### Test locally (no WhatsApp, no Twilio quota)
 
 ```bash
-.venv/bin/python tests/test_local.py
+source .venv/bin/activate
+python3 tests/interface_locale/server.py
+# Open http://localhost:7777
 ```
+
+Three-column interface: Thomas | Christophe activity feed | Marie. Real-time tool calls, dossier evolution, journal, and generated documents.
 
 ---
 
 ## Special commands
 
-Send `clean` from any WhatsApp number to wipe conversation memory and reset all pending repairs. Useful for demos.
+Send `clean` from any known WhatsApp number to wipe all conversation memory and reset to a blank slate. Useful between demos.
+
+---
+
+## Security
+
+- **Twilio signature validation** — every incoming webhook is verified with HMAC-SHA1 against the auth token. Invalid signatures are rejected silently.
+- **Phone number allowlist** — messages from unknown numbers are dropped before reaching the agent.
+- **asyncio.Lock per phone** — concurrent messages from the same number are serialized, preventing race conditions.
+- **PDF forgery prevention** — legal fields (names, amounts, address) are sourced from `config/bail.yaml` only, never from LLM-supplied input.
+- **Prompt injection guard** — user message content in the journal is wrapped in XML tags with an explicit warning to Claude to treat it as data, not instructions.
 
 ---
 
 ## Key design decisions
 
-**Why autonomous agent + tool use instead of a state machine?**
-Claude decides what to do based on context — it reads the conversation, the repair state, and the parties involved, then calls the right tool. This makes it adaptable: the same agent handles a broken boiler, a rent receipt request, or a payment delay without branching code.
+**Why a single agent context instead of separate tenant/landlord brains?**
+The same Christophe instance handles both parties. Identity is injected into the system prompt at each turn (`speaker: "locataire"` or `"bailleur"`). This keeps the responsibility matrix in one place and avoids duplicating context.
 
-**Why two separate brain contexts?**
-The tenant and landlord have different roles, expectations, and available actions. Tenant brain has `contacter_bailleur()`. Landlord brain has `approuver_intervention()` and `refuser_intervention()`. Each system prompt is tuned to the party's perspective.
+**Why a journal + dossier system?**
+LLMs forget. The journal (written by code, not Claude) is injected at every turn so Claude can't claim it hasn't done something. The dossier (plan with milestones) prevents the agent from skipping steps or repeating actions already completed.
 
-**Why identity by phone number?**
-The same Twilio number receives messages from everyone. Routing by phone number (mapped in `people.yaml`) keeps the webhook simple and the logic clean.
-
----
-
-## What's next
-
-- Multi-tenant support (multiple properties, multiple landlords)
-- Slot selection flow (tenant picks from proposed repair slots)
-- Real repair company integrations (vs. simulated slots)
-- Lease document generation (rent receipts, amendments)
-- Charge regularization assistant
+**Why `bail.yaml` as the source of truth for documents?**
+Rent receipts are legal documents. Allowing the LLM to supply the tenant's name or rent amount would be a forgery vector — any injected message could override them. `bail.yaml` is read-only at document generation time.
 
 ---
 
