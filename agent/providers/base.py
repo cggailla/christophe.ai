@@ -23,5 +23,9 @@ class FournisseurWhatsApp(ABC):
     async def envoyer_message(self, telephone: str, message: str) -> bool:
         ...
 
+    async def envoyer_document(self, telephone: str, filepath: str, legende: str = "") -> bool:
+        """Envoie un fichier PDF en pièce jointe. Retourne True si succès."""
+        return False
+
     async def valider_webhook(self, request: Request):
         return None

@@ -16,6 +16,9 @@ venv/
 knowledge/*
 !knowledge/.gitkeep
 
+# Documents générés par l'agent (PDFs de test)
+documents/
+
 # Config de session
 config/session.yaml
 

@@ -18,7 +18,10 @@ class Message(Base):
 
 
 async def initialiser_db():
-    import agent.repairs  # noqa — enregistre Reparation dans Base avant create_all
+    import agent.repairs   # noqa
+    import agent.notes     # noqa
+    import agent.dossiers  # noqa
+    import agent.journal   # noqa
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
