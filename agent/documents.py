@@ -1,10 +1,18 @@
 # agent/documents.py — Génération de documents PDF
 
 import os
+import yaml
 from datetime import datetime
 from fpdf import FPDF
 
 DOCUMENTS_DIR = "documents"
+BAIL_PATH = "config/bail.yaml"
+
+
+def _charger_bail() -> dict:
+    """Charge les données du bail — source de vérité unique pour tout document légal."""
+    with open(BAIL_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def _ensure_dir():
@@ -39,29 +47,31 @@ def generer_quittance(donnees: dict) -> str:
     """
     Génère une quittance de loyer PDF.
 
-    donnees attendues (Claude les remplit depuis le system prompt) :
-      tenant_name      : "Thomas Martin"
-      landlord_name    : "Marie Dubois"
-      property_address : "42 rue de la Roquette, 75011 Paris"
+    Les champs légaux (noms, adresse, montants) viennent EXCLUSIVEMENT du fichier
+    config/bail.yaml. Ils ne peuvent pas être modifiés par l'agent ou un input LLM.
+
+    Seuls ces champs sont lus depuis l'input :
       periode          : "juillet 2025"
-      date_debut       : "01/07/2025"
-      date_fin         : "31/07/2025"
-      loyer_hc         : 950
-      charges          : 80
-      total            : 1030
+      date_debut       : "01/07/2025"   (optionnel)
+      date_fin         : "31/07/2025"   (optionnel)
       date_emission    : "15/05/2026"   (optionnel, défaut = aujourd'hui)
     """
     _ensure_dir()
+    bail = _charger_bail()
 
-    tenant   = donnees.get("tenant_name", "Thomas Martin")
-    landlord = donnees.get("landlord_name", "Marie Dubois")
-    adresse  = donnees.get("property_address", "42 rue de la Roquette, 75011 Paris")
+    # Source de vérité : bail.yaml. Ces valeurs écrasent toujours les inputs.
+    tenant   = bail.get("parties", {}).get("locataire", {}).get("nom", "")
+    landlord = bail.get("parties", {}).get("bailleur", {}).get("nom", "")
+    adresse  = bail.get("bien", {}).get("adresse", "")
+    loyer    = bail.get("loyer", {})
+    loyer_hc = float(loyer.get("loyer_hc", 0))
+    charges  = float(loyer.get("charges", 0))
+    total    = float(loyer.get("total", loyer_hc + charges))
+
+    # Inputs autorisés (que la période/date d'émission, jamais les noms ni les montants)
     periode  = donnees.get("periode", "")
     debut    = donnees.get("date_debut", "")
     fin      = donnees.get("date_fin", "")
-    loyer_hc = float(donnees.get("loyer_hc", 0))
-    charges  = float(donnees.get("charges", 0))
-    total    = float(donnees.get("total", loyer_hc + charges))
     emis_le  = donnees.get("date_emission", datetime.today().strftime("%d/%m/%Y"))
 
     pdf = _QuittancePDF()

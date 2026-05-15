@@ -1,0 +1,27 @@
+# Données du bail — source de vérité pour la génération de documents légaux.
+# Christophe NE PEUT PAS modifier ces valeurs depuis un tool. Elles sont chargées
+# directement dans documents.py et écrasent tout input fourni par le modèle.
+
+bien:
+  adresse: "42 rue de la Roquette, 75011 Paris"
+  type: "Studio meublé"
+  surface_m2: 28
+
+parties:
+  bailleur:
+    nom: "Marie Dubois"
+  locataire:
+    nom: "Thomas Martin"
+
+loyer:
+  loyer_hc: 950
+  charges: 80
+  total: 1030
+  devise: "EUR"
+  jour_echeance: 5
+
+bail:
+  date_signature: "2025-03-14"
+  date_entree: "2025-04-01"
+  duree_mois: 12
+  depot_garantie: 1900

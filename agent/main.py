@@ -2,18 +2,16 @@
 
 import os
 import yaml
+import asyncio
 import logging
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 
 from agent.brain import agent_loop
-from agent.memory import initialiser_db, sauvegarder_message, obtenir_historique, effacer_historique
-from agent.repairs import effacer_toutes_reparations
-from agent.notes import effacer_toutes_notes
-from agent.dossiers import effacer_tous_dossiers
-from agent.journal import effacer_journal
+from agent.memory import initialiser_db, sauvegarder_message, obtenir_historique
 from agent.providers import obtenir_fournisseur
 
 load_dotenv(override=True)
@@ -64,10 +62,32 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Christophe.AI", version="3.0.0", lifespan=lifespan)
 
+# Lock par téléphone — sérialise agent_loop pour une même conversation
+# Empêche deux messages back-to-back ou un retry Twilio de lancer deux loops concurrents.
+_locks_telephone: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
 
 @app.get("/")
 async def health_check():
     return {"status": "ok", "agent": "Christophe", "version": "3.0"}
+
+
+@app.get("/documents/{filename}")
+async def servir_document(filename: str):
+    """Sert les PDFs générés. Twilio fetch cette URL via MediaUrl."""
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+
+    if "/" in filename or "\\" in filename or ".." in filename or not filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Nom de fichier invalide")
+
+    base = Path("documents").resolve()
+    resolved = (base / filename).resolve()
+    if not str(resolved).startswith(str(base) + os.sep) or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Document introuvable")
+
+    return FileResponse(str(resolved), media_type="application/pdf", filename=filename)
 
 
 @app.get("/webhook")
@@ -87,31 +107,25 @@ async def webhook_handler(request: Request):
             if msg.est_propre or not msg.texte:
                 continue
 
-            est_bailleur = bool(LANDLORD_PHONE and msg.telephone == LANDLORD_PHONE)
+            # Filtre de sécurité : on n'accepte que les numéros connus.
+            # Empêche une signature Twilio forgée (via une faille externe) de
+            # piloter l'agent depuis un numéro arbitraire.
+            if msg.telephone not in (TENANT_PHONE, LANDLORD_PHONE):
+                logger.warning(f"Message reçu d'un numéro inconnu {msg.telephone} — ignoré")
+                continue
+
+            est_bailleur = msg.telephone == LANDLORD_PHONE
             speaker = "bailleur" if est_bailleur else "locataire"
             logger.info(f"[{speaker.upper()}] {msg.telephone}: {msg.texte}")
 
-            # Commande spéciale : reset complet
-            if msg.texte.strip().lower() == "clean":
-                # Effacer les historiques des deux parties
-                await effacer_historique(TENANT_PHONE)
-                await effacer_historique(LANDLORD_PHONE)
-                # Effacer tous les artefacts
-                await effacer_toutes_reparations()
-                await effacer_toutes_notes()
-                await effacer_tous_dossiers()
-                await effacer_journal()
-                logger.info(f"[CLEAN] Reset complet déclenché par {msg.telephone}")
-                await fournisseur.envoyer_message(msg.telephone, "Mémoire effacée — historique, notes, dossiers et réparations. Nouvelle conversation !")
-                continue
-
             ctx = build_ctx(speaker, msg.telephone)
-            historique = await obtenir_historique(msg.telephone)
 
-            reponse = await agent_loop(msg.texte, historique, ctx)
-
-            await sauvegarder_message(msg.telephone, "user", msg.texte)
-            await sauvegarder_message(msg.telephone, "assistant", reponse)
+            # Lock par téléphone — sérialise les agent_loops d'une même conversation.
+            async with _locks_telephone[msg.telephone]:
+                historique = await obtenir_historique(msg.telephone)
+                reponse = await agent_loop(msg.texte, historique, ctx)
+                await sauvegarder_message(msg.telephone, "user", msg.texte)
+                await sauvegarder_message(msg.telephone, "assistant", reponse)
             await fournisseur.envoyer_message(msg.telephone, reponse)
 
         return {"status": "ok"}
